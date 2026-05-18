@@ -1,0 +1,647 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import {
+  collection,
+  addDoc,
+  getDocs,
+  doc,
+  updateDoc,
+  arrayUnion,
+  arrayRemove,
+  onSnapshot,
+  query,
+  where,
+  serverTimestamp,
+  orderBy,
+} from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
+import { db, auth } from "@/lib/firebase";
+import {
+  Plus,
+  Users,
+  Search,
+  X,
+  LogIn,
+  Crown,
+  Copy,
+  Check,
+  ChevronRight,
+  Zap,
+  MessageSquare,
+  Code2,
+  Hash,
+  Lock,
+  Globe,
+  Home,
+  Compass,
+} from "lucide-react";
+
+type Team = {
+  id: string;
+  name: string;
+  description?: string;
+  ownerId: string;
+  ownerName?: string;
+  members: string[];
+  memberNames?: string[];
+  inviteCode?: string;
+  isPrivate?: boolean;
+  createdAt?: any;
+  tags?: string[];
+};
+
+const AVATAR_COLORS = [
+  "from-blue-500 to-cyan-400",
+  "from-violet-500 to-blue-400",
+  "from-cyan-500 to-teal-400",
+  "from-rose-500 to-orange-400",
+  "from-emerald-500 to-cyan-400",
+  "from-amber-500 to-orange-400",
+];
+
+function getAvatarColor(str?: string) {
+  if (!str) return AVATAR_COLORS[0];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+function getInitials(name?: string) {
+  if (!name) return "?";
+  return name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
+}
+
+function generateInviteCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
+export default function TeamsPage() {
+  const router = useRouter();
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  const [myTeams, setMyTeams] = useState<Team[]>([]);
+  const [discoverTeams, setDiscoverTeams] = useState<Team[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [activeTab, setActiveTab] = useState<"my" | "discover">("my");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Create modal
+  const [showCreate, setShowCreate] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createDesc, setCreateDesc] = useState("");
+  const [createPrivate, setCreatePrivate] = useState(false);
+  const [createTags, setCreateTags] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  // Join modal
+  const [showJoin, setShowJoin] = useState(false);
+  const [joinCode, setJoinCode] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState("");
+
+  // Copied invite code
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // ── Auth ───────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
+
+  // ── Load teams ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!authReady) return;
+    setLoading(true);
+
+    // All public teams
+    const q = query(collection(db, "teams"), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      const all: Team[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as any;
+        all.push({ id: d.id, ...data });
+      });
+
+      if (currentUser) {
+        setMyTeams(all.filter((t) => t.members?.includes(currentUser.uid)));
+        setDiscoverTeams(all.filter((t) => !t.members?.includes(currentUser.uid) && !t.isPrivate));
+      } else {
+        setMyTeams([]);
+        setDiscoverTeams(all.filter((t) => !t.isPrivate));
+      }
+      setLoading(false);
+    });
+
+    return () => unsub();
+  }, [authReady, currentUser]);
+
+  // ── Create team ────────────────────────────────────────────────────────────
+  const handleCreate = async () => {
+    if (!currentUser) { router.push("/login"); return; }
+    if (!createName.trim()) return;
+    setCreating(true);
+    try {
+      const code = generateInviteCode();
+      await addDoc(collection(db, "teams"), {
+        name: createName.trim(),
+        description: createDesc.trim() || null,
+        ownerId: currentUser.uid,
+        ownerName: currentUser.displayName || currentUser.email?.split("@")[0] || "Anonymous",
+        members: [currentUser.uid],
+        memberNames: [currentUser.displayName || currentUser.email?.split("@")[0] || "Anonymous"],
+        inviteCode: code,
+        isPrivate: createPrivate,
+        tags: createTags.split(",").map((t) => t.trim()).filter(Boolean),
+        createdAt: serverTimestamp(),
+      });
+      setCreateName("");
+      setCreateDesc("");
+      setCreatePrivate(false);
+      setCreateTags("");
+      setShowCreate(false);
+    } catch (err) {
+      console.error("Failed to create team:", err);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  // ── Join by code ───────────────────────────────────────────────────────────
+  const handleJoin = async () => {
+    if (!currentUser) { router.push("/login"); return; }
+    if (!joinCode.trim()) return;
+    setJoining(true);
+    setJoinError("");
+    try {
+      const q = query(collection(db, "teams"), where("inviteCode", "==", joinCode.trim().toUpperCase()));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        setJoinError("Invalid invite code. Please check and try again.");
+        setJoining(false);
+        return;
+      }
+      const teamDoc = snap.docs[0];
+      const teamData = teamDoc.data() as any;
+      if (teamData.members?.includes(currentUser.uid)) {
+        setJoinError("You are already a member of this team.");
+        setJoining(false);
+        return;
+      }
+      await updateDoc(doc(db, "teams", teamDoc.id), {
+        members: arrayUnion(currentUser.uid),
+        memberNames: arrayUnion(currentUser.displayName || currentUser.email?.split("@")[0] || "Anonymous"),
+      });
+      setJoinCode("");
+      setShowJoin(false);
+    } catch (err) {
+      setJoinError("Something went wrong. Please try again.");
+      console.error(err);
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  // ── Join public team ───────────────────────────────────────────────────────
+  const joinPublicTeam = async (team: Team) => {
+    if (!currentUser) { router.push("/login"); return; }
+    await updateDoc(doc(db, "teams", team.id), {
+      members: arrayUnion(currentUser.uid),
+      memberNames: arrayUnion(currentUser.displayName || currentUser.email?.split("@")[0] || "Anonymous"),
+    });
+  };
+
+  // ── Leave team ─────────────────────────────────────────────────────────────
+  const leaveTeam = async (team: Team) => {
+    if (!currentUser || team.ownerId === currentUser.uid) return;
+    await updateDoc(doc(db, "teams", team.id), {
+      members: arrayRemove(currentUser.uid),
+      memberNames: arrayRemove(currentUser.displayName || currentUser.email?.split("@")[0] || "Anonymous"),
+    });
+  };
+
+  // ── Copy invite code ───────────────────────────────────────────────────────
+  const copyInviteCode = (id: string, code: string) => {
+    navigator.clipboard.writeText(code);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const filteredDiscover = discoverTeams.filter((t) =>
+    t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    t.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    t.tags?.some((tag) => tag.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+
+  return (
+    <div className="min-h-screen bg-[#080B10] text-white font-sans">
+
+      {/* ── HEADER ── */}
+      <header className="sticky top-0 z-50 flex items-center justify-between px-6 md:px-10 py-3.5 border-b border-white/5 bg-[#080B10]/80 backdrop-blur-xl">
+        <Link href="/">
+          <span className="text-[#1E90FF] text-xl font-black tracking-tight">
+            Dev<span className="text-white">Connect</span>
+          </span>
+        </Link>
+
+        <div className="hidden md:flex items-center gap-1 bg-white/5 border border-white/8 rounded-full px-1 py-1">
+          {[{ label: "Feed", href: "/feed" }, { label: "Teams", href: "/teams" }, { label: "Explore", href: "/explore" }].map(({ label, href }) => (
+            <Link key={label} href={href}>
+              <button className={`px-4 py-1.5 rounded-full text-sm font-medium transition-all ${href === "/teams" ? "bg-[#1E90FF] text-white shadow-lg shadow-blue-500/20" : "text-gray-400 hover:text-white"}`}>
+                {label}
+              </button>
+            </Link>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-3">
+          {authReady && (currentUser ? (
+            <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${getAvatarColor(currentUser.uid)} flex items-center justify-center text-xs font-bold overflow-hidden`}>
+              {currentUser.photoURL
+                ? <img src={currentUser.photoURL} alt="me" className="w-8 h-8 rounded-full object-cover" />
+                : getInitials(currentUser.displayName || currentUser.email)}
+            </div>
+          ) : (
+            <Link href="/login">
+              <button className="text-sm bg-[#1E90FF] hover:bg-[#1a7de0] px-4 py-2 rounded-full font-semibold transition-all shadow-lg shadow-blue-500/20">Login</button>
+            </Link>
+          ))}
+        </div>
+      </header>
+
+      <div className="max-w-6xl mx-auto px-4 md:px-6 py-8">
+
+        {/* ── PAGE HEADER ── */}
+        <div className="flex items-start justify-between mb-8 flex-wrap gap-4">
+          <div>
+            <h1 className="text-3xl md:text-4xl font-black">Teams</h1>
+            <p className="text-gray-500 text-sm mt-1">Collaborate, build, and ship together in real time.</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => currentUser ? setShowJoin(true) : router.push("/login")}
+              className="flex items-center gap-2 border border-white/10 bg-white/5 hover:bg-white/8 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all"
+            >
+              <LogIn className="w-4 h-4" />
+              Join via Code
+            </button>
+            <button
+              onClick={() => currentUser ? setShowCreate(true) : router.push("/login")}
+              className="flex items-center gap-2 bg-[#1E90FF] hover:bg-[#1a7de0] px-4 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-blue-500/20"
+            >
+              <Plus className="w-4 h-4" />
+              New Team
+            </button>
+          </div>
+        </div>
+
+        {/* ── TABS ── */}
+        <div className="flex items-center gap-1 bg-[#0E1117] border border-white/5 rounded-2xl p-1 mb-6 w-fit">
+          {(["my", "discover"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-5 py-2 rounded-xl text-sm font-medium transition-all capitalize ${activeTab === tab ? "bg-[#1E90FF] text-white shadow-lg shadow-blue-500/20" : "text-gray-500 hover:text-white"}`}
+            >
+              {tab === "my" ? `My Teams${myTeams.length ? ` (${myTeams.length})` : ""}` : "Discover"}
+            </button>
+          ))}
+        </div>
+
+        {/* ── SEARCH (discover only) ── */}
+        {activeTab === "discover" && (
+          <div className="relative mb-6 max-w-md">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+            <input
+              placeholder="Search teams by name or tag…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-[#0E1117] border border-white/5 focus:border-[#1E90FF]/30 rounded-xl pl-10 pr-4 py-2.5 text-sm text-white placeholder-gray-600 outline-none transition-colors"
+            />
+          </div>
+        )}
+
+        {/* ── MY TEAMS ── */}
+        {activeTab === "my" && (
+          <>
+            {!authReady || loading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="bg-[#0E1117] border border-white/5 rounded-2xl p-5 animate-pulse space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-2xl bg-white/5" />
+                      <div className="space-y-2 flex-1">
+                        <div className="h-3 bg-white/5 rounded w-2/3" />
+                        <div className="h-2 bg-white/5 rounded w-1/2" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : !currentUser ? (
+              <div className="bg-[#0E1117] border border-white/5 rounded-2xl p-12 text-center">
+                <div className="w-14 h-14 rounded-2xl bg-[#1E90FF]/10 border border-[#1E90FF]/20 flex items-center justify-center mx-auto mb-4">
+                  <Users className="w-7 h-7 text-[#1E90FF]" />
+                </div>
+                <h3 className="font-bold text-lg mb-2">Sign in to see your teams</h3>
+                <p className="text-gray-600 text-sm mb-6">Join or create teams to start collaborating.</p>
+                <Link href="/login">
+                  <button className="bg-[#1E90FF] hover:bg-[#1a7de0] px-6 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-blue-500/20">Sign In</button>
+                </Link>
+              </div>
+            ) : myTeams.length === 0 ? (
+              <div className="bg-[#0E1117] border border-white/5 rounded-2xl p-12 text-center">
+                <div className="w-14 h-14 rounded-2xl bg-white/5 border border-white/8 flex items-center justify-center mx-auto mb-4">
+                  <Users className="w-7 h-7 text-gray-600" />
+                </div>
+                <h3 className="font-bold text-lg mb-2">No teams yet</h3>
+                <p className="text-gray-600 text-sm mb-6">Create a team or join one with an invite code.</p>
+                <div className="flex justify-center gap-3">
+                  <button onClick={() => setShowCreate(true)} className="bg-[#1E90FF] hover:bg-[#1a7de0] px-5 py-2.5 rounded-xl text-sm font-bold transition-all shadow-lg shadow-blue-500/20 flex items-center gap-2">
+                    <Plus className="w-4 h-4" /> Create Team
+                  </button>
+                  <button onClick={() => setShowJoin(true)} className="border border-white/10 bg-white/5 hover:bg-white/8 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2">
+                    <LogIn className="w-4 h-4" /> Join via Code
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {myTeams.map((team) => (
+                  <TeamCard
+                    key={team.id}
+                    team={team}
+                    currentUser={currentUser}
+                    isMember={true}
+                    onLeave={() => leaveTeam(team)}
+                    onCopyCode={() => copyInviteCode(team.id, team.inviteCode!)}
+                    copied={copiedId === team.id}
+                    onChat={() => router.push(`/chat?team=${team.id}`)}
+                    onLive={() => router.push(`/live?team=${team.id}`)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── DISCOVER ── */}
+        {activeTab === "discover" && (
+          <>
+            {loading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[1, 2, 3, 4, 5, 6].map((i) => (
+                  <div key={i} className="bg-[#0E1117] border border-white/5 rounded-2xl p-5 animate-pulse space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-12 h-12 rounded-2xl bg-white/5" />
+                      <div className="space-y-2 flex-1">
+                        <div className="h-3 bg-white/5 rounded w-2/3" />
+                        <div className="h-2 bg-white/5 rounded w-1/2" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : filteredDiscover.length === 0 ? (
+              <div className="bg-[#0E1117] border border-white/5 rounded-2xl p-12 text-center">
+                <p className="text-gray-600 text-sm">No public teams found{searchQuery ? ` for "${searchQuery}"` : ""}.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredDiscover.map((team) => (
+                  <TeamCard
+                    key={team.id}
+                    team={team}
+                    currentUser={currentUser}
+                    isMember={false}
+                    onJoin={() => joinPublicTeam(team)}
+                    copied={false}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* ── CREATE MODAL ── */}
+      {showCreate && (
+        <Modal onClose={() => setShowCreate(false)} title="Create a Team">
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5 block">Team Name *</label>
+              <input
+                value={createName}
+                onChange={(e) => setCreateName(e.target.value)}
+                placeholder="e.g. Rocket Squad"
+                className="w-full bg-[#080B10] border border-white/8 focus:border-[#1E90FF]/40 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-700 outline-none transition-colors"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5 block">Description</label>
+              <textarea
+                value={createDesc}
+                onChange={(e) => setCreateDesc(e.target.value)}
+                placeholder="What does your team work on?"
+                rows={3}
+                className="w-full bg-[#080B10] border border-white/8 focus:border-[#1E90FF]/40 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-700 outline-none resize-none transition-colors"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5 block">Tags (comma separated)</label>
+              <input
+                value={createTags}
+                onChange={(e) => setCreateTags(e.target.value)}
+                placeholder="react, typescript, backend"
+                className="w-full bg-[#080B10] border border-white/8 focus:border-[#1E90FF]/40 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-700 outline-none transition-colors"
+              />
+            </div>
+            <div
+              onClick={() => setCreatePrivate(!createPrivate)}
+              className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${createPrivate ? "border-[#1E90FF]/30 bg-[#1E90FF]/5" : "border-white/8 bg-white/3 hover:bg-white/5"}`}
+            >
+              <div className="flex items-center gap-2">
+                {createPrivate ? <Lock className="w-4 h-4 text-[#1E90FF]" /> : <Globe className="w-4 h-4 text-gray-400" />}
+                <span className="text-sm font-medium">{createPrivate ? "Private Team" : "Public Team"}</span>
+              </div>
+              <div className={`w-9 h-5 rounded-full transition-all ${createPrivate ? "bg-[#1E90FF]" : "bg-white/10"} relative`}>
+                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${createPrivate ? "left-4" : "left-0.5"}`} />
+              </div>
+            </div>
+            <button
+              onClick={handleCreate}
+              disabled={creating || !createName.trim()}
+              className="w-full bg-[#1E90FF] hover:bg-[#1a7de0] disabled:opacity-40 disabled:cursor-not-allowed py-3 rounded-xl text-sm font-bold transition-all shadow-lg shadow-blue-500/20"
+            >
+              {creating ? "Creating…" : "Create Team"}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── JOIN MODAL ── */}
+      {showJoin && (
+        <Modal onClose={() => { setShowJoin(false); setJoinError(""); setJoinCode(""); }} title="Join via Invite Code">
+          <div className="space-y-4">
+            <div>
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-1.5 block">Invite Code</label>
+              <input
+                value={joinCode}
+                onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                placeholder="e.g. AB1C2D"
+                maxLength={6}
+                className="w-full bg-[#080B10] border border-white/8 focus:border-[#1E90FF]/40 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-700 outline-none transition-colors tracking-widest font-mono text-center text-base uppercase"
+              />
+            </div>
+            {joinError && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+                <p className="text-red-400 text-xs">{joinError}</p>
+              </div>
+            )}
+            <button
+              onClick={handleJoin}
+              disabled={joining || joinCode.length < 4}
+              className="w-full bg-[#1E90FF] hover:bg-[#1a7de0] disabled:opacity-40 disabled:cursor-not-allowed py-3 rounded-xl text-sm font-bold transition-all shadow-lg shadow-blue-500/20"
+            >
+              {joining ? "Joining…" : "Join Team"}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ── Team Card ─────────────────────────────────────────────────────────────────
+function TeamCard({
+  team, currentUser, isMember, onLeave, onJoin, onCopyCode, copied, onChat, onLive,
+}: {
+  team: Team;
+  currentUser: any;
+  isMember: boolean;
+  onLeave?: () => void;
+  onJoin?: () => void;
+  onCopyCode?: () => void;
+  copied: boolean;
+  onChat?: () => void;
+  onLive?: () => void;
+}) {
+  const isOwner = currentUser?.uid === team.ownerId;
+
+  return (
+    <div className="bg-[#0E1117] border border-white/5 hover:border-white/10 rounded-2xl p-5 flex flex-col gap-4 transition-all duration-200 hover:shadow-xl hover:shadow-black/20">
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${getAvatarColor(team.id)} flex items-center justify-center text-sm font-black flex-shrink-0`}>
+          {getInitials(team.name)}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold text-sm truncate">{team.name}</h3>
+            {isOwner && <Crown className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" title="You own this team" />}
+            {team.isPrivate
+              ? <Lock className="w-3 h-3 text-gray-600 flex-shrink-0" />
+              : <Globe className="w-3 h-3 text-gray-600 flex-shrink-0" />}
+          </div>
+          <p className="text-xs text-gray-600 mt-0.5">by {team.ownerName || "Unknown"}</p>
+        </div>
+      </div>
+
+      {/* Description */}
+      {team.description && (
+        <p className="text-gray-500 text-xs leading-relaxed line-clamp-2">{team.description}</p>
+      )}
+
+      {/* Tags */}
+      {team.tags && team.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {team.tags.slice(0, 4).map((tag) => (
+            <span key={tag} className="flex items-center gap-1 text-[10px] bg-white/5 border border-white/8 px-2 py-0.5 rounded-full text-gray-500">
+              <Hash className="w-2.5 h-2.5" />{tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Members */}
+      <div className="flex items-center gap-2">
+        <div className="flex -space-x-1.5">
+          {(team.memberNames || []).slice(0, 4).map((name, i) => (
+            <div key={i} className={`w-6 h-6 rounded-full bg-gradient-to-br ${getAvatarColor(name)} border-2 border-[#0E1117] flex items-center justify-center text-[8px] font-bold`}>
+              {getInitials(name)}
+            </div>
+          ))}
+        </div>
+        <span className="text-xs text-gray-600">
+          {team.members?.length || 0} member{(team.members?.length || 0) !== 1 ? "s" : ""}
+        </span>
+      </div>
+
+      {/* Actions */}
+      {isMember ? (
+        <div className="flex flex-col gap-2 mt-auto">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={onChat}
+              className="flex items-center justify-center gap-1.5 bg-white/5 hover:bg-white/8 border border-white/8 py-2 rounded-xl text-xs font-semibold text-gray-300 transition-all"
+            >
+              <MessageSquare className="w-3.5 h-3.5" /> Chat
+            </button>
+            <button
+              onClick={onLive}
+              className="flex items-center justify-center gap-1.5 bg-[#1E90FF]/10 hover:bg-[#1E90FF]/15 border border-[#1E90FF]/20 py-2 rounded-xl text-xs font-semibold text-[#1E90FF] transition-all"
+            >
+              <Zap className="w-3.5 h-3.5" /> Live
+            </button>
+          </div>
+          {team.inviteCode && (
+            <button
+              onClick={onCopyCode}
+              className="flex items-center justify-center gap-1.5 bg-white/3 hover:bg-white/5 border border-white/5 py-2 rounded-xl text-xs text-gray-600 hover:text-gray-400 transition-all"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? "Copied!" : `Invite: ${team.inviteCode}`}
+            </button>
+          )}
+          {!isOwner && (
+            <button onClick={onLeave} className="text-xs text-gray-700 hover:text-red-400 transition-colors text-center py-1">
+              Leave team
+            </button>
+          )}
+        </div>
+      ) : (
+        <button
+          onClick={onJoin}
+          className="mt-auto flex items-center justify-center gap-1.5 w-full bg-[#1E90FF]/10 hover:bg-[#1E90FF]/15 border border-[#1E90FF]/20 py-2.5 rounded-xl text-sm font-semibold text-[#1E90FF] transition-all"
+        >
+          <LogIn className="w-4 h-4" /> Join Team
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Modal wrapper ─────────────────────────────────────────────────────────────
+function Modal({ children, onClose, title }: { children: React.ReactNode; onClose: () => void; title: string }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 bg-[#0E1117] border border-white/8 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="font-bold text-lg">{title}</h2>
+          <button onClick={onClose} className="p-1.5 rounded-xl text-gray-500 hover:text-white hover:bg-white/8 transition-all">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
