@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, Suspense, useCallback } from "react";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { db, auth } from "@/lib/firebase";
@@ -109,7 +109,7 @@ const ICE_SERVERS = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-export default function LivePage() {
+function LivePageContent()  {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -1111,5 +1111,13 @@ export default function LivePage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function LivePage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LivePageContent />
+    </Suspense>
   );
 }
