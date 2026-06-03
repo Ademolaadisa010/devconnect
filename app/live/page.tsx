@@ -2,7 +2,7 @@
 
 /**
  * DevConnect Live Page
- * 
+ *
  * WebRTC fix summary:
  * 1. RemoteVideoTile is a stable component outside the parent — never remounts
  * 2. Remote streams stored in a ref AND mirrored to state for rendering
@@ -11,6 +11,8 @@
  * 5. TURN servers added for cross-network audio/video
  * 6. Each peer gets its own dedicated MediaStream object for remote tracks
  * 7. processedSignals set prevents duplicate signal handling
+ * 8. pendingAnswers ref queues answers that arrive before PC is built
+ * 9. pendingIce ref queues ICE that arrives before PC is built
  */
 
 import { useEffect, useState, useRef, Suspense, useCallback } from "react";
@@ -104,8 +106,6 @@ const RTC_CONFIG: RTCConfiguration = {
 };
 
 // ── RemoteVideoTile — MUST be outside main component ─────────────────────────
-// Defined at module level so React never recreates it on parent re-render.
-// If this is inside the parent, it remounts every render → srcObject is lost.
 function RemoteVideoTile({
   peerId, stream, name,
 }: { peerId: string; stream: MediaStream; name: string }) {
@@ -114,7 +114,6 @@ function RemoteVideoTile({
   useEffect(() => {
     const el = vidRef.current;
     if (!el) return;
-    // Only reassign if the stream actually changed
     if (el.srcObject !== stream) {
       el.srcObject = stream;
       el.play().catch(() => {});
@@ -145,6 +144,7 @@ interface PeerEntry {
   pc: RTCPeerConnection;
   remoteStream: MediaStream;
   iceCandidateQueue: RTCIceCandidateInit[];
+  pendingAnswer?: RTCSessionDescriptionInit; // queued if answer arrived before PC was built
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,7 +171,6 @@ function LivePageContent() {
   const [sharing, setSharing] = useState(false);
 
   // Remote streams: peerId → MediaStream
-  // We keep a ref for the engine and mirror to state for rendering
   const remoteStreamsRef = useRef<Record<string, MediaStream>>({});
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
 
@@ -184,6 +183,10 @@ function LivePageContent() {
   const meRef = useRef<any>(null);
   const signalingUnsubRef = useRef<(() => void) | null>(null);
   const seenSignals = useRef<Set<string>>(new Set());
+
+  // ── FIX: queues for signals that arrive before the PC is built ──────────────
+  const pendingAnswers = useRef<Record<string, RTCSessionDescriptionInit>>({});
+  const pendingIce = useRef<Record<string, RTCIceCandidateInit[]>>({});
 
   // Chat / AI
   const [msgs, setMsgs] = useState<ChatMessage[]>([]);
@@ -264,7 +267,6 @@ function LivePageContent() {
 
   // ── Get local media ─────────────────────────────────────────────────────────
   const getMedia = async (): Promise<MediaStream | null> => {
-    // Try video + audio
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
@@ -277,7 +279,6 @@ function LivePageContent() {
       }
       return s;
     } catch {
-      // Fallback: audio only
       try {
         const s = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -289,40 +290,54 @@ function LivePageContent() {
       } catch {
         setCamOn(false);
         setMicOn(false);
-        // Return silent stream so WebRTC still works
         return null;
       }
     }
   };
 
+  // ── Drain queued ICE candidates ─────────────────────────────────────────────
+  const drainICE = useCallback(async (peerId: string) => {
+    const entry = peersRef.current[peerId];
+    if (!entry) return;
+    while (entry.iceCandidateQueue.length > 0) {
+      const c = entry.iceCandidateQueue.shift()!;
+      try {
+        await entry.pc.addIceCandidate(new RTCIceCandidate(c));
+      } catch (e) { console.warn("drain ICE error:", e); }
+    }
+  }, []);
+
   // ── Create RTCPeerConnection for one peer ───────────────────────────────────
   const buildPC = useCallback((peerId: string, localStream: MediaStream): RTCPeerConnection => {
-    // Clean up any existing connection
     if (peersRef.current[peerId]) {
       peersRef.current[peerId].pc.close();
       delete peersRef.current[peerId];
     }
 
     const pc = new RTCPeerConnection(RTC_CONFIG);
-    const remoteStream = new MediaStream(); // dedicated stream per peer
+    const remoteStream = new MediaStream();
 
-    peersRef.current[peerId] = { pc, remoteStream, iceCandidateQueue: [] };
+    // Merge any ICE candidates that arrived before this PC was built
+    const preQueuedIce = pendingIce.current[peerId] ?? [];
+    delete pendingIce.current[peerId];
 
-    // Add all local tracks to this connection
+    peersRef.current[peerId] = {
+      pc,
+      remoteStream,
+      iceCandidateQueue: preQueuedIce, // seed the queue with anything that arrived early
+    };
+
     localStream.getTracks().forEach(track => {
       pc.addTrack(track, localStream);
     });
 
-    // When remote tracks arrive, add to the dedicated stream
     pc.ontrack = (evt) => {
       console.log(`[${peerId}] ontrack`, evt.track.kind);
       evt.track.onunmute = () => {
         remoteStream.addTrack(evt.track);
-        // Update both ref and state
         remoteStreamsRef.current[peerId] = remoteStream;
         setRemoteStreams(prev => ({ ...prev, [peerId]: remoteStream }));
       };
-      // Also add immediately (some browsers fire unmute before ontrack)
       if (evt.track.readyState === "live") {
         remoteStream.addTrack(evt.track);
         remoteStreamsRef.current[peerId] = remoteStream;
@@ -330,7 +345,6 @@ function LivePageContent() {
       }
     };
 
-    // Send ICE candidates to Firestore
     pc.onicecandidate = async (evt) => {
       if (!evt.candidate) return;
       try {
@@ -347,7 +361,6 @@ function LivePageContent() {
     pc.onconnectionstatechange = () => {
       console.log(`[${peerId}] connection state:`, pc.connectionState);
       if (pc.connectionState === "failed") {
-        // Attempt ICE restart
         pc.restartIce();
       }
       if (pc.connectionState === "disconnected" || pc.connectionState === "closed") {
@@ -364,23 +377,26 @@ function LivePageContent() {
       console.log(`[${peerId}] ICE gathering:`, pc.iceGatheringState);
     };
 
-    return pc;
-  }, []);
-
-  // ── Drain queued ICE candidates ─────────────────────────────────────────────
-  const drainICE = useCallback(async (peerId: string) => {
-    const entry = peersRef.current[peerId];
-    if (!entry) return;
-    while (entry.iceCandidateQueue.length > 0) {
-      const c = entry.iceCandidateQueue.shift()!;
-      try {
-        await entry.pc.addIceCandidate(new RTCIceCandidate(c));
-      } catch (e) { console.warn("drain ICE error:", e); }
+    // ── FIX: drain any answer that arrived before this PC was built ────────────
+    // Use setTimeout(0) so the caller can finish setLocalDescription first
+    const pendingAnswer = pendingAnswers.current[peerId];
+    if (pendingAnswer) {
+      delete pendingAnswers.current[peerId];
+      setTimeout(async () => {
+        const entry = peersRef.current[peerId];
+        if (!entry || entry.pc.signalingState !== "have-local-offer") return;
+        try {
+          console.log(`[${peerId}] applying queued answer`);
+          await entry.pc.setRemoteDescription(new RTCSessionDescription(pendingAnswer));
+          await drainICE(peerId);
+        } catch (e) { console.error(`[${peerId}] queued answer error:`, e); }
+      }, 0);
     }
-  }, []);
+
+    return pc;
+  }, [drainICE]);
 
   // ── Signaling listener ──────────────────────────────────────────────────────
-  // Must start BEFORE we send any offer so we don't miss answers/ICE
   const startSignaling = useCallback((sessionId: string, localStream: MediaStream) => {
     signalingUnsubRef.current?.();
     seenSignals.current.clear();
@@ -403,7 +419,6 @@ function LivePageContent() {
         console.log(`[signaling] received ${sig.type} from ${fromId}`);
 
         if (sig.type === "offer") {
-          // Someone is calling us — build PC as answerer
           const pc = buildPC(fromId, localStream);
 
           try {
@@ -424,7 +439,14 @@ function LivePageContent() {
 
         } else if (sig.type === "answer") {
           const entry = peersRef.current[fromId];
-          if (!entry) { console.warn("no PC for answer from", fromId); continue; }
+
+          if (!entry) {
+            // ── FIX: PC not built yet — stash the answer ──────────────────────
+            console.warn(`[${fromId}] answer arrived before PC — queuing`);
+            pendingAnswers.current[fromId] = { type: "answer", sdp: sig.sdp };
+            continue;
+          }
+
           if (entry.pc.signalingState !== "have-local-offer") continue;
 
           try {
@@ -434,11 +456,17 @@ function LivePageContent() {
 
         } else if (sig.type === "ice") {
           const entry = peersRef.current[fromId];
-          if (!entry) { console.warn("no PC for ICE from", fromId); continue; }
+
+          if (!entry) {
+            // ── FIX: PC not built yet — stash the ICE candidate ──────────────
+            console.warn(`[${fromId}] ICE arrived before PC — queuing`);
+            if (!pendingIce.current[fromId]) pendingIce.current[fromId] = [];
+            pendingIce.current[fromId].push(sig.candidate);
+            continue;
+          }
 
           const candidate: RTCIceCandidateInit = sig.candidate;
           if (!entry.pc.remoteDescription) {
-            // Queue — remote description not set yet
             entry.iceCandidateQueue.push(candidate);
           } else {
             try {
@@ -492,15 +520,13 @@ function LivePageContent() {
 
     if (!localStream) return;
 
-    // 5. For each OTHER participant already in the call,
-    //    we create a PC and send an offer (we are the caller)
+    // 5. Send offers to all OTHER participants already in the call
     const others = (fresh.participants as string[]).filter((p: string) => p !== me.uid);
     console.log("Sending offers to:", others);
 
     for (const peerId of others) {
       const pc = buildPC(peerId, localStream);
       try {
-        // Create offer with explicit constraints
         const offer = await pc.createOffer({
           offerToReceiveAudio: true,
           offerToReceiveVideo: true,
@@ -520,23 +546,23 @@ function LivePageContent() {
 
   // ── Leave call ──────────────────────────────────────────────────────────────
   const handleLeave = useCallback(async () => {
-    // Stop signaling
     signalingUnsubRef.current?.();
     signalingUnsubRef.current = null;
     seenSignals.current.clear();
 
-    // Stop local tracks
+    // Clear pending queues
+    pendingAnswers.current = {};
+    pendingIce.current = {};
+
     localStreamRef.current?.getTracks().forEach(t => t.stop());
     screenStreamRef.current?.getTracks().forEach(t => t.stop());
     localStreamRef.current = null;
     screenStreamRef.current = null;
 
-    // Close all peer connections
     Object.values(peersRef.current).forEach(({ pc }) => pc.close());
     peersRef.current = {};
     remoteStreamsRef.current = {};
 
-    // Remove from Firestore
     if (session && me) {
       const r = doc(db, "liveSessions", session.id);
       const s = await getDoc(r);
