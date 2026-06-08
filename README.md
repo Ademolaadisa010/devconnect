@@ -1,36 +1,207 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DevConnect
 
-## Getting Started
+## Overview
 
-First, run the development server:
+DevConnect is an AI-powered engineering operations workspace that helps development, DevOps, and security teams investigate incidents, collaborate in real time, and resolve issues faster using Splunk-powered operational intelligence and AI agents.
+
+The platform combines team communication, incident response workflows, observability insights, and AI-assisted troubleshooting into a single collaborative environment.
+
+---
+
+## Problem
+
+Engineering teams often rely on multiple disconnected tools to monitor systems, investigate incidents, communicate with teammates, and document resolutions.
+
+During critical incidents, valuable time is lost switching between dashboards, chat applications, monitoring tools, and documentation platforms.
+
+DevConnect addresses this challenge by creating a centralized workspace where teams and AI agents can collaborate around operational data and incident investigations.
+
+---
+
+## Features
+
+### AI Incident Investigation
+
+* Analyze operational events and logs
+* Generate incident summaries
+* Provide root cause analysis suggestions
+* Recommend remediation actions
+
+### Team Collaboration
+
+* Real-time messaging
+* Incident response channels
+* Team workspaces
+* Shared investigation sessions
+
+### Voice & Video Communication
+
+* Real-time collaboration during incidents
+* Engineering war rooms
+* Cross-team coordination
+
+### Splunk Integration
+
+* Access operational insights
+* Analyze monitoring data
+* Investigate alerts and anomalies
+* Improve incident response workflows
+
+### Knowledge Sharing
+
+* Incident documentation
+* Investigation history
+* Team knowledge base
+* Post-incident reporting
+
+---
+
+## How It Works
+
+1. An operational issue or incident is detected.
+2. Engineers create or join an incident workspace.
+3. Splunk data is analyzed and surfaced within DevConnect.
+4. AI agents investigate patterns and provide insights.
+5. Team members collaborate through chat, voice, and video.
+6. AI generates summaries and recommendations.
+7. Teams resolve incidents faster and document outcomes.
+
+---
+
+## Technology Stack
+
+### Frontend
+
+* React
+* Tailwind CSS
+
+### Backend
+
+* Node.js
+* Express.js
+
+### Database
+
+* Firebase Firestore
+
+### Authentication
+
+* Firebase Authentication
+
+### AI Services
+
+* Gemini API
+* AI Investigation Agents
+
+### Observability & Monitoring
+
+* Splunk APIs
+* Splunk Operational Data
+
+### Real-Time Communication
+
+* WebRTC
+* WebSockets
+
+### Hosting
+
+* Vercel
+
+---
+
+## System Architecture
+
+See `architecture_diagram.png` in the root directory.
+
+The architecture includes:
+
+* Client Application
+* Backend Services
+* Firebase Database
+* Splunk Integration Layer
+* AI Agent Layer
+* Real-Time Communication Services
+
+---
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/devconnect.git
+```
+
+Navigate to the project folder:
+
+```bash
+cd devconnect
+```
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+---
+
+## Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+GEMINI_API_KEY=your_api_key
+SPLUNK_API_KEY=your_api_key
+FIREBASE_API_KEY=your_api_key
+FIREBASE_PROJECT_ID=your_project_id
+```
+
+---
+
+## Running the Application
+
+Start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Build for production:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Run production build:
 
-## Learn More
+```bash
+npm start
+```
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Future Roadmap
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+* Multi-agent incident investigation
+* Automated incident triage
+* Predictive anomaly detection
+* AI-generated remediation plans
+* Advanced observability dashboards
+* Security operations workflows
+* Enterprise deployment support
+* Additional Splunk integrations
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## License
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+MIT License
+
+---
+
+## Contributors
+
+Built for the Splunk Agentic Ops Hackathon 2026.
+
+DevConnect demonstrates how AI agents, operational intelligence, and team collaboration can work together to improve incident response and engineering productivity.
